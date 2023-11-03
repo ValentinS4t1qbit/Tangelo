@@ -28,13 +28,19 @@ References:
         (2022).
 """
 import gc
+import os
+import string
 import sys
 import itertools
 import math
 import time
 from collections import OrderedDict
 from itertools import product
+from multiprocessing import cpu_count, Pool
+from functools import partial
 
+import codon
+from numba import jit
 import numpy as np
 from scipy.special import comb
 from scipy.sparse import lil_matrix, coo_matrix, coo_array
@@ -42,13 +48,20 @@ from openfermion.transforms import chemist_ordered
 
 from tangelo.toolboxes.operators import QubitOperator
 
-from multiprocessing import Pool
-n_procs = 4
+
+# os.environ["JULIA_NUM_THREADS"] = str(4) # str(cpu_count())
+#
+# import julia
+# jl = julia.Julia(compiled_modules=False)
+#
+# from julia import Main
+# Main.include("combinatorial.jl")
 
 
 ZERO_TOLERANCE = 1e-8
 
 
+#@codon.jit(debug=True)
 def int_to_tuple(integer, n_qubits):
     """ Convert a qubit Hamiltonian term in integer encoding (stabilizer representation) into
     an Openfermion-style tuple.
@@ -83,7 +96,44 @@ def int_to_tuple(integer, n_qubits):
 
     return tuple(term)
 
+#@profile
+#@codon.jit(debug=True)
+def int_to_tuple2(integer, n_qubits):
+    """ Convert a qubit Hamiltonian term in integer encoding (stabilizer representation) into
+    an Openfermion-style tuple.
 
+    Bits in the binary representation of the integer encode the Pauli operators that need to be applied
+    to each qubit. Each consecutive pair of bits encode information for a specific qubit.
+
+    Args:
+        integer (int): integer to decode. Its binary representation has 2*n_qubits bits
+        n_qubits (int): number of qubits in the term
+
+    Returns:
+        tuple: OpenFermion-style term including up to n_qubits qubits
+    """
+
+    #bs = format(integer, f'0{str(2 * n_qubits)}b')[::-1]
+    #bs += (2*n_qubits-len(bs))*'0'
+
+    bs = bin(integer)[2:][::-1]
+    if len(bs)%2:
+        bs += '0'
+    term = []
+
+    for i in range(len(bs)//2): #range(n_qubits):
+        xz_term = bs[2*i:2*i+2]
+
+        if xz_term == '10':
+            term.append((i, 'X'))
+        elif xz_term == '01':
+            term.append((i, 'Z'))
+        elif xz_term == '11':
+            term.append((i, 'Y'))
+
+    return tuple(term)
+
+#@codon.jit(debug=True)
 def tensor_product_pauli_dicts(pa, pb):
     """ Perform the tensor product of 2 Pauli operators by using their underlying dictionary of terms.
 
@@ -94,6 +144,7 @@ def tensor_product_pauli_dicts(pa, pb):
     Returns:
         dict[int -> complex]: tensor product of Pauli operators
     """
+
     pp = dict()
     for ta, ca in pa.items():
         for tb, cb in pb.items():
@@ -192,7 +243,7 @@ def recursive_mapping(M):
                 M_00[k] = M_00.get(k, 0.) + v
         return M_00
 
-
+#@profile
 def recursive_mapping_dict(M, n, s): # n is n_rows and n_cols here
 
     # Bottom of recursion: 2x2 matrix case
@@ -205,6 +256,7 @@ def recursive_mapping_dict(M, n, s): # n is n_rows and n_cols here
     else:
 
         n_qubits = int(math.log2(n))
+
         shift_x = 2 * (n_qubits - 1)
         shift_z = shift_x + 1
 
@@ -236,16 +288,17 @@ def recursive_mapping_dict(M, n, s): # n is n_rows and n_cols here
                 else:
                     Ms_11[(x, y)] = v
 
-        M_00 = tensor_product_pauli_dicts(recursive_mapping_dict(Ms_00, n//2, (s[0], s[1])), i_plus_z)
-        M_11 = tensor_product_pauli_dicts(recursive_mapping_dict(Ms_11, n//2,(s[0]+piv, s[1]+piv)), i_minus_z)
-        M_01 = tensor_product_pauli_dicts(recursive_mapping_dict(Ms_01, n//2, (s[0], s[1]+piv)), x_plus_iy)
-        M_10 = tensor_product_pauli_dicts(recursive_mapping_dict(Ms_10, n//2, (s[0]+piv, s[1])), x_minus_iy)
+        Ms = [Ms_00, Ms_11, Ms_01, Ms_10]
+        shifts = [(s[0], s[1]), (s[0]+piv, s[1]+piv), (s[0], s[1]+piv), (s[0]+piv, s[1])]
+        values = [i_plus_z, i_minus_z, x_plus_iy, x_minus_iy]
 
-        # Merge the 4 outputs into one additively
-        for d in M_01, M_10, M_11:
-            for (k, v) in d.items():
-                M_00[k] = M_00.get(k, 0.) + v
-        return M_00
+        res = dict()
+        for m, ss, v in zip(Ms, shifts, values):
+            if m:
+                d = tensor_product_pauli_dicts(recursive_mapping_dict(m, n//2, ss), v)
+                for (k, v) in d.items(): res[k] = res.get(k, 0.) + v
+        res = {k: v for k, v in res.items() if v != 0}
+        return res
 
 def prep(n):
     # print(n)
@@ -265,6 +318,221 @@ def prep(n):
     x_minus_iy = {x_op: 0.5, y_op: -0.5j}
 
     return i_plus_z, i_minus_z, x_plus_iy, x_minus_iy
+
+def combinatorial_jl(ferm_op, n_modes, n_electrons):
+    """Function to transform the fermionic Hamiltonian into a basis constructed
+    in the Fock space.
+
+    Args:
+        ferm_op (FermionOperator). Fermionic operator, with alternate ordering
+            as followed in the openfermion package
+        n_modes (int): Number of relevant molecular orbitals, i.e. active molecular
+            orbitals.
+        n_electrons (int): Number of active electrons.
+
+    Returns:
+        QubitOperator: Self-explanatory.
+    """
+
+    # The chemist ordering splits some 1-body and 2-body terms.
+    ferm_op = chemist_ordered(ferm_op)
+
+    # Specify the number of alpha and beta electrons.
+    if isinstance(n_electrons, tuple) and len(n_electrons) == 2:
+        n_alpha, n_beta = n_electrons
+    elif isinstance(n_electrons, int) and n_electrons % 2 == 0:
+        n_alpha = n_beta = n_electrons // 2
+    else:
+        raise ValueError(f"{n_electrons} is not a valid entry for n_electrons, must be a tuple or an int.")
+
+    # Get the number of qubits n.
+    n_choose_alpha = comb(n_modes, n_alpha, exact=True)
+    n_choose_beta = comb(n_modes, n_beta, exact=True)
+    n = math.ceil(np.log2(n_choose_alpha * n_choose_beta))
+
+    # Construct the basis set where each configutation is mapped to a unique
+    # integer.
+    basis_set_alpha = basis(n_modes, n_alpha)
+    basis_set_beta = basis(n_modes, n_beta)
+    basis_set = dict()
+
+    for sigma_alpha, int_alpha in basis_set_alpha.items():
+        for sigma_beta, int_beta in basis_set_beta.items():
+            # Alternate ordering (like FermionOperator in openfermion).
+            sigma = tuple(sorted([2*sa for sa in sigma_alpha] + [2*sb+1 for sb in sigma_beta]))
+            unique_int = (int_alpha * n_choose_beta) + int_beta
+            basis_set[sigma] = unique_int
+
+    #print(f"N qubits: {n}")
+    #print(f"Min int: {min(basis_set.values())}")
+    #print(f"Max int: {max(basis_set.values())}")
+    #print(f"Length int: {len(basis_set.values())}")
+
+    qu_op_dict = Main.get_qubit_op(ferm_op.terms, basis_set, n)
+
+    qu_op = QubitOperator()
+    qu_op.terms = qu_op_dict
+
+    return qu_op
+
+
+def compute2(tM):
+    m00, m01, m10, m11 = tM.get((0, 0), 0.), tM.get((0, 1), 0.), tM.get((1, 0), 0.), tM.get((1, 1), 0.)
+    res = {0: 0.5 * (m00 + m11), 1: 0.5 * (m01 + m10), 2: 0.5 * (m00 - m11), 3: 0.5j * (m01 - m10)}
+    return res
+
+
+def agglomerate(values, ops):
+    res = dict()
+    for i in range(4):
+        if values[i] is not None:
+            d = tensor_product_pauli_dicts(values[i], ops[i])
+            for (k, v) in d.items(): res[k] = res.get(k, 0.) + v
+    res = {k: v for k, v in res.items() if v != 0}
+    return res
+
+#@profile
+def combinatorial5(ferm_op, n_modes, n_electrons):
+
+    t1_quop = time.time()
+    # The chemist ordering splits some 1-body and 2-body terms.
+    ferm_op_chemist = chemist_ordered(ferm_op)
+
+    # Specify the number of alpha and beta electrons.
+    if isinstance(n_electrons, tuple) and len(n_electrons) == 2:
+        n_alpha, n_beta = n_electrons
+    elif isinstance(n_electrons, int) and n_electrons % 2 == 0:
+        n_alpha = n_beta = n_electrons // 2
+    else:
+        raise ValueError(f"{n_electrons} is not a valid entry for n_electrons, must be a tuple or an int.")
+
+    # Get the number of qubits n.
+    n_choose_alpha = comb(n_modes, n_alpha, exact=True)
+    n_choose_beta = comb(n_modes, n_beta, exact=True)
+    n = math.ceil(np.log2(n_choose_alpha * n_choose_beta))
+    print(f"[combinatorial] n_qubits = {n}")
+
+    # Construct the basis set where each configuration is mapped to a unique integer.
+    basis_set_alpha = basis(n_modes, n_alpha)
+    basis_set_beta = basis(n_modes, n_beta)
+    basis_set = OrderedDict()
+    for sigma_alpha, int_alpha in basis_set_alpha.items():
+        for sigma_beta, int_beta in basis_set_beta.items():
+            # Alternate ordering (like FermionOperator in Openfermion).
+            sigma = tuple(sorted([2*sa for sa in sigma_alpha] + [2*sb+1 for sb in sigma_beta]))
+            unique_int = (int_alpha * n_choose_beta) + int_beta
+            basis_set[sigma] = unique_int
+
+    quop_matrix = dict()
+    cte = ferm_op_chemist.terms.pop(tuple()) if ferm_op_chemist.constant else 0.
+    n_basis = len(basis_set)
+    confs, ints = list(zip(*basis_set.items())) # No need for these, we can draw them one by one
+
+    # Get the effect of each operator to the basis set items.
+    for i in range(n_basis):
+        conf, unique_int = confs[i], ints[i]
+
+        filtered_ferm_op = {k: v for (k, v) in ferm_op_chemist.terms.items() if k[-1][0] in conf}
+        for (term, coeff) in filtered_ferm_op.items():
+            new_state, phase = one_body_op_on_state(term[-2:], conf)
+
+            if len(term) == 4 and new_state:
+                new_state, phase_two = one_body_op_on_state(term[:2], new_state)
+                phase *= phase_two
+
+            if not new_state:
+                continue
+
+            new_unique_int = basis_set[new_state]
+            quop_matrix[(unique_int, new_unique_int)] = quop_matrix.get((unique_int, new_unique_int), 0.) + phase*coeff
+
+    # Valentin: quop is a Dict[(int, int) -> complex]
+    print(f'combinatorial5 :: quop dict size {len(quop_matrix)} \t (memory :: {sys.getsizeof(quop_matrix)//10**6} Mbytes)')
+    t2_quop = time.time()
+    print(f"quop built (elapsed : {t2_quop - t1_quop}s)")
+
+    # Converts matrix back into qubit operator object
+    gsize = 2**n # total size
+    get_tensor_ops = {2**k: prep(2**k) for k in range(1, n+1)}
+
+    # Split data across all 2x2 matrices
+    t1_ground = time.time()
+    t = dict()
+    t[2] = dict()
+
+    for ((x, y), v) in quop_matrix.items():
+        xl, yl, xr, yr = x//2, y//2, x%2, y%2
+        t[2][xl, yl] = t[2].get((xl, yl), dict())
+        t[2][xl, yl][(xr, yr)] = v
+
+    quop_matrix.clear() #del quop_matrix; gc.collect()
+    t2_ground = time.time()
+    print(f"Ground level built (elapsed : {t2_ground - t1_ground}s)")
+
+    # Agglomerate lowermost level
+    t1_l2 = time.time()
+    t[4] = dict()
+    ops = get_tensor_ops[4]
+
+    for (x, y) in t[2]:
+        xn, yn = x//2, y//2
+        if (xn, yn) not in t[4]:
+
+            xl, yl = 2*xn, 2*yn
+            values = []
+            for xy in [(xl, yl), (xl + 1, yl + 1), (xl, yl + 1), (xl + 1, yl)]:
+                v = t[2].get(xy, None)
+                v = compute2(v) if v else None
+                values.append(v)
+            if values != [None] * 4:
+                t[4][x // 2, y // 2] = agglomerate(values, ops)
+
+    t2_l2 = time.time()
+    print(f"Level 4 built (elapsed : {t2_l2 - t1_l2: 8.1f}s)")
+
+    # Agglomerate levels above iteratively
+    t[2].clear() #del t[2]; gc.collect()
+    l, s = 8, 2**(n-2)
+
+    while l <= gsize:
+        t1_level = time.time()
+        t[l] = dict()
+        ops = get_tensor_ops[l]
+
+        for (x, y) in t[l//2]:
+            xn, yn = x // 2, y // 2
+            if (xn, yn) not in t[l]:
+
+                xl, yl = 2*xn, 2*yn
+                values = []
+                for xy in [(xl, yl), (xl + 1, yl + 1), (xl, yl + 1), (xl + 1, yl)]:
+                    values.append(t[l//2].get(xy, None))
+                if values != [None] * 4:
+                    t[l][x // 2, y // 2] = agglomerate(values, ops)
+
+        # Next iteration
+        t[l // 2].clear()  # del t[l//2]; gc.collect()
+        l, s = 2 * l, s // 2
+
+        t2_level = time.time()
+        print(f"Level {l:7d} built (elapsed : {t2_level - t1_level: 8.1f}s)")
+
+    quop_ints = t[l//2][(0, 0)]
+
+    # Construct final operator
+    t1 = time.time()
+    quop = QubitOperator()
+    for (term, coeff) in quop_ints.items():
+        coeff = coeff.real if abs(coeff.imag < ZERO_TOLERANCE) else coeff
+        if not (abs(coeff) < ZERO_TOLERANCE):
+            t = int_to_tuple2(term, n)
+            quop.terms[t] = coeff
+    quop.terms[tuple()] = quop.terms.get(tuple(), 0.) + cte
+
+    t2 = time.time()
+    print(f"Final operator built (elapsed : {t2 - t1: 8.1f}s)")
+
+    return quop
 
 #@profile
 def combinatorial4(ferm_op, n_modes, n_electrons):
@@ -330,111 +598,78 @@ def combinatorial4(ferm_op, n_modes, n_electrons):
     gsize = 2**n # total size
     get_tensor_ops = {2**k: prep(2**k) for k in range(1, n+1)}
 
-    def compute2(tM):
-        m00, m01, m10, m11 = tM.get((0, 0), 0.), tM.get((0, 1), 0.), tM.get((1, 0), 0.), tM.get((1, 1), 0.)
-        res = {0: 0.5 * (m00 + m11), 1: 0.5 * (m01 + m10), 2: 0.5 * (m00 - m11), 3: 0.5j * (m01 - m10)}
-        return res
-
+    t1_ground = time.time()
     # Split data across all 2x2 matrices
     t = dict()
-    t[2] = {(xl, yl): dict() for (xl, yl) in product(range(0, 2**(n-1)), range(0, 2**(n-1)))}
-    t[4] = {(xl, yl): dict() for (xl, yl) in product(range(0, 2**(n-2)), range(0, 2**(n-2)))}
+    t[2] = dict()
 
     for ((x, y), v) in quop_matrix.items():
         xl, yl, xr, yr = x//2, y//2, x%2, y%2
-        t[2][(xl, yl)][(xr, yr)] = v
+
+        #t[2][(xl, yl)][(xr, yr)] = v
+        # Version that does not require initialization of all empty dicts
+        t[2][xl, yl] = t[2].get((xl, yl), dict())
+        t[2][xl, yl][(xr, yr)] = v
+
     quop_matrix.clear() #del quop_matrix; gc.collect()
+    t2_ground = time.time()
+    print(f"Ground level built (elapsed : {t2_ground - t1_ground}s)")
 
-    def agglomerate_level2(t_in, t_out, ops, x, y):
-
-        M_00 = tensor_product_pauli_dicts(compute2(t_in[(x, y)]), ops[0])
-        M_11 = tensor_product_pauli_dicts(compute2(t_in[(x + 1, y + 1)]), ops[1])
-        M_01 = tensor_product_pauli_dicts(compute2(t_in[(x, y + 1)]), ops[2])
-        M_10 = tensor_product_pauli_dicts(compute2(t_in[(x + 1, y)]), ops[3])
-
-        for (k, v) in M_01.items(): M_00[k] = M_00.get(k, 0.) + v
-        for (k, v) in M_10.items(): M_00[k] = M_00.get(k, 0.) + v
-        for (k, v) in M_11.items(): M_00[k] = M_00.get(k, 0.) + v
-
-        xl, yl = x // 2, y // 2
-        t_out[(xl, yl)] = M_00.copy()
-
-    def agglomerate_level(t_in, t_out, ops, x, y):
-
-        M_00 = tensor_product_pauli_dicts(t_in[(x, y)], ops[0])
-        M_11 = tensor_product_pauli_dicts(t_in[(x + 1, y + 1)], ops[1])
-        M_01 = tensor_product_pauli_dicts(t_in[(x, y + 1)], ops[2])
-        M_10 = tensor_product_pauli_dicts(t_in[(x + 1, y)], ops[3])
-
-        for (k, v) in M_01.items(): M_00[k] = M_00.get(k, 0.) + v
-        for (k, v) in M_10.items(): M_00[k] = M_00.get(k, 0.) + v
-        for (k, v) in M_11.items(): M_00[k] = M_00.get(k, 0.) + v
-
-        xl, yl = x // 2, y // 2
-        t_out[(xl, yl)] = M_00.copy()
-
-    # Agglomerate to level 4
+    # Agglomerate lowermost level
+    t1_l2 = time.time()
+    t[4] = dict()
     ops = get_tensor_ops[4]
     for (x, y) in product(range(0, 2**(n-1), 2), range(0, 2**(n-1), 2)):
-        agglomerate_level2(t[2], t[4], ops, x, y)
+        #values = [compute2(t[2][xy]) for xy in [(x, y), (x+1, y+1), (x, y+1), (x+1, y)]]
+        values = []
+        for xy in [(x, y), (x + 1, y + 1), (x, y + 1), (x + 1, y)]:
+            v = t[2].get(xy, None)
+            v = compute2(v) if v else None
+            values.append(v)
+        if values != [None] * 4:
+            t[4][x//2, y//2] = agglomerate(values, ops)
+    t2_l2 = time.time()
+    print(f"Level 4 built (elapsed : {t2_l2 - t1_l2: 8.1f}s)")
+
+    # def agglo_wrapper1(x, y):
+    #     values = [compute2(t[2][xy]) for xy in [(x, y), (x + 1, y + 1), (x, y + 1), (x + 1, y)]]
+    #     t[4][x // 2, y // 2] = agglomerate(values, ops)
+    #
+    # pool = Pool(4)
+    # pool.starmap(agglomerate, product(range(0, 2**(n-1), 2), range(0, 2**(n-1), 2)), chunksize=1)
+    # agglo2 = partial(agglomerate_level2, t_in=t[2], t_out=t[4], ops=ops)
+    # datas = list(product(range(0, 2**(n-1), 2), range(0, 2**(n-1), 2)))
+    # pool.map(agglo2, datas)
 
     # Agglomerate levels above iteratively
     t[2].clear() #del t[2]; gc.collect()
     l, s = 8, 2**(n-2)
 
     while l <= gsize:
-        t[l] = {(xl, yl): dict() for (xl, yl) in product(range(0, s//2), range(0, s//2))}
+        t1_level = time.time()
+        #t[l] = {(xl, yl): dict() for (xl, yl) in product(range(0, s//2), range(0, s//2))}
+        t[l] = dict()
         ops = get_tensor_ops[l]
+
         for (x, y) in product(range(0, s, 2), range(0, s, 2)):
-            agglomerate_level(t[l//2], t[l], ops, x, y)
+            #values = [t[l//2][xy] for xy in [(x, y), (x + 1, y + 1), (x, y + 1), (x + 1, y)]]
+            values = []
+            for xy in [(x, y), (x + 1, y + 1), (x, y + 1), (x + 1, y)]:
+                values.append(t[l//2].get(xy, None))
+            if values != [None] * 4:
+                t[l][x // 2, y // 2] = agglomerate(values, ops)
 
         # Next iteration
         t[l // 2].clear()  # del t[l//2]; gc.collect()
         l, s = 2 * l, s // 2
 
-    # # Agglomerate to level 4
-    # ops = get_tensor_ops[4]
-    # for (x, y) in product(range(0, 2**(n-1), 2), range(0, 2**(n-1), 2)):
-    #
-    #     M_00 = tensor_product_pauli_dicts(compute2(t[2][(x,y)]), ops[0])
-    #     M_11 = tensor_product_pauli_dicts(compute2(t[2][(x+1,y+1)]), ops[1])
-    #     M_01 = tensor_product_pauli_dicts(compute2(t[2][(x,y+1)]), ops[2])
-    #     M_10 = tensor_product_pauli_dicts(compute2(t[2][(x+1,y)]), ops[3])
-    #
-    #     for (k, v) in M_01.items(): M_00[k] = M_00.get(k, 0.) + v
-    #     for (k, v) in M_10.items(): M_00[k] = M_00.get(k, 0.) + v
-    #     for (k, v) in M_11.items(): M_00[k] = M_00.get(k, 0.) + v
-    #
-    #     xl, yl = x // 2, y // 2
-    #     t[4][(xl, yl)] = M_00.copy()
-
-    # # Drop previous level out of memory, initialize iterative aggregation loop
-    # t[2].clear() #del t[2]; gc.collect()
-    # l, s = 8, 2**(n-2)
-    # while l <= gsize:
-    #     t[l] = {(xl, yl): dict() for (xl, yl) in product(range(0, s//2), range(0, s//2))}
-    #     ops = get_tensor_ops[l]
-    #     for (x, y) in product(range(0, s, 2), range(0, s, 2)):
-    #
-    #         M_00 = tensor_product_pauli_dicts(t[l//2][(x, y)], ops[0])
-    #         M_11 = tensor_product_pauli_dicts(t[l//2][(x + 1, y + 1)], ops[1])
-    #         M_01 = tensor_product_pauli_dicts(t[l//2][(x, y + 1)], ops[2])
-    #         M_10 = tensor_product_pauli_dicts(t[l//2][(x + 1, y)], ops[3])
-    #
-    #         for (k, v) in M_01.items(): M_00[k] = M_00.get(k, 0.) + v
-    #         for (k, v) in M_10.items(): M_00[k] = M_00.get(k, 0.) + v
-    #         for (k, v) in M_11.items(): M_00[k] = M_00.get(k, 0.) + v
-    #
-    #         xl, yl = x // 2, y // 2
-    #         t[l][(xl, yl)] = M_00.copy()
-    #
-    #     # Next iteration
-    #     t[l//2].clear() #del t[l//2]; gc.collect()
-    #     l, s = 2 * l, s // 2
+        t2_level = time.time()
+        print(f"Level {l:7d} built (elapsed : {t2_level - t1_level: 8.1f}s)")
 
     quop_ints = t[l//2][(0, 0)]
 
     # Construct final operator
+    t1 = time.time()
     quop = QubitOperator()
     for (term, coeff) in quop_ints.items():
         coeff = coeff.real if abs(coeff.imag < ZERO_TOLERANCE) else coeff
@@ -442,6 +677,9 @@ def combinatorial4(ferm_op, n_modes, n_electrons):
             t = int_to_tuple(term, n)
             quop.terms[t] = coeff
     quop.terms[tuple()] = quop.terms.get(tuple(), 0.) + cte
+
+    t2 = time.time()
+    print(f"Final operator built (elapsed : {t2 - t1: 8.1f}s)")
 
     return quop
 
@@ -504,37 +742,17 @@ def combinatorial_dict(ferm_op, n_modes, n_electrons):
             quop_matrix[(unique_int, new_unique_int)] = quop_matrix.get((unique_int, new_unique_int), 0.) + phase*coeff
 
     # Print size of dict (should be lower than dense array)
-    print(f'combinatorial3 :: quop dict size {len(quop_matrix)} \t (memory :: {sys.getsizeof(quop_matrix)//10**6} Mbytes)')
+    print(f'combinatorial dict :: quop dict size {len(quop_matrix)} \t (memory :: {sys.getsizeof(quop_matrix)//10**6} Mbytes)')
     t2_quop = time.time()
     print(f"quop built (elapsed : {t2_quop - t1_quop}s)")
 
-    # Convert dict to COO
-    # s = len(quop_matrix)
-    t1_coo = time.time()
-    rows, cols, vals = list(), list(), list() #np.array(s, dtype=np.int32), np.array(s, dtype=np.int32), np.array(s, dtype=np.complex64)
-    for (i,j), k in quop_matrix.items():
-        rows.append(i)
-        cols.append(j)
-        vals.append(k)
-    quop_tmp = coo_array((vals, (rows, cols)), shape=(2**n, 2**n))
-    t2_coo = time.time()
-    print(f"COO matrix built (elapsed : {t2_coo-t1_coo}s)")
-
-    # Convert COO to lil
-    t1_lil = time.time()
-    quop_sp = quop_tmp.tolil()
-    t2_lil = time.time()
-    print(f"lil matrix built (elapsed : {t2_lil-t1_lil}s)")
-
     # Converts matrix back into qubit operator object
-    quop_ints = recursive_mapping(quop_sp)
-
-    #quop_ints = recursive_mapping_dict(quop_matrix, 2**n, (0,0))
+    quop_ints = recursive_mapping_dict(quop_matrix, 2**n, (0,0))
     quop = QubitOperator()
     for (term, coeff) in quop_ints.items():
         coeff = coeff.real if abs(coeff.imag < ZERO_TOLERANCE) else coeff
         if not (abs(coeff) < ZERO_TOLERANCE):
-            t = int_to_tuple(term, n)
+            t = int_to_tuple2(term, n)
             quop.terms[t] = coeff
     quop.terms[tuple()] = quop.terms.get(tuple(), 0.) + cte
 
