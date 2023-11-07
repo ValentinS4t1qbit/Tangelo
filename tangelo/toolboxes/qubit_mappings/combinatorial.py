@@ -331,8 +331,10 @@ def recursive_mapping_dict(M, n, s): # n is n_rows and n_cols here
             if n_qubits > 10:
                 with open(f'comb_{n_qubits}_{q}.pkl', 'wb') as file:
                     #file.write(json.dumps(d))
-                    print(f'Writting:: \t comb_{n_qubits}_{q}.pkl')
+                    t1 = time.time()
                     pickle.dump(d, file, protocol=5)
+                    t2 = time.time()
+                    print(f'comb_{n_qubits}_{q}.pkl \t written in ({t2-t1:.2f} s)')
             # Low level case: should be easy to immediately agglomerate
             else:
                 if m:
@@ -343,7 +345,10 @@ def recursive_mapping_dict(M, n, s): # n is n_rows and n_cols here
             for f in [f'comb_{n_qubits}_{q}.pkl' for q in range(4)]:
                 with open(f, 'rb') as file:
                     #d = json.load(file)
+                    t1 = time.time()
                     d = pickle.load(file)
+                    t2 = time.time()
+                    print(f'{f} \t loaded in ({t2-t1:.2f} s)')
                     for (k, v) in d.items(): res[k] = res.get(k, 0.) + v
                 os.remove(f)
 
