@@ -30,6 +30,8 @@ References:
 import gc
 import os
 import string
+import json
+import pickle
 import sys
 import itertools
 import math
@@ -39,8 +41,8 @@ from itertools import product
 from multiprocessing import cpu_count, Pool
 from functools import partial
 
-import codon
-from numba import jit
+#import codon
+#from numba import jit
 import numpy as np
 from scipy.special import comb
 from scipy.sparse import lil_matrix, coo_matrix, coo_array
@@ -273,30 +275,79 @@ def recursive_mapping_dict(M, n, s): # n is n_rows and n_cols here
 
         piv = n // 2
 
-        # Split into smaller dicts
-        Ms_00, Ms_01, Ms_10, Ms_11 = dict(), dict(), dict(), dict()
+        # # Split into smaller dicts
+        # Ms_00, Ms_01, Ms_10, Ms_11 = dict(), dict(), dict(), dict()
+        #
+        # for ((x, y),v) in M.items():
+        #     if x < piv + s[0]:
+        #         if y < piv + s[1]:
+        #             Ms_00[(x, y)] = v
+        #         else:
+        #             Ms_01[(x, y)] = v
+        #     else:
+        #         if y < piv + s[1]:
+        #             Ms_10[(x, y)] = v
+        #         else:
+        #             Ms_11[(x, y)] = v
 
-        for ((x, y),v) in M.items():
-            if x < piv + s[0]:
-                if y < piv + s[1]:
-                    Ms_00[(x, y)] = v
-                else:
-                    Ms_01[(x, y)] = v
-            else:
-                if y < piv + s[1]:
-                    Ms_10[(x, y)] = v
-                else:
-                    Ms_11[(x, y)] = v
+        # Ms = [Ms_00, Ms_11, Ms_01, Ms_10]
 
-        Ms = [Ms_00, Ms_11, Ms_01, Ms_10]
+
+        def get_quadrant_matrix(M, quadrant, piv, s):
+
+            xp, yp = piv + s[0], piv + s[1]
+            if quadrant == 0: #00
+                Mq = {(x, y): v for ((x, y), v) in M.items() if x < xp and y < yp}
+            elif quadrant == 1: #01
+                Mq = {(x, y): v for ((x, y), v) in M.items() if x < xp and y >= yp}
+            elif quadrant == 2: #10
+                Mq = {(x, y): v for ((x, y), v) in M.items() if x >= xp and y < yp}
+            else: #11
+                Mq = {(x, y): v for ((x, y), v) in M.items() if x >= xp and y >= yp}
+            return Mq
+
+        quadrants = [0, 3, 1, 2]
         shifts = [(s[0], s[1]), (s[0]+piv, s[1]+piv), (s[0], s[1]+piv), (s[0]+piv, s[1])]
         values = [i_plus_z, i_minus_z, x_plus_iy, x_minus_iy]
 
+        # res = dict()
+        # for q, ss, v in zip(quadrants, shifts, values):
+        #
+        #     m = get_quadrant_matrix(M, q, piv, (s[0], s[1]))
+        #     if m:
+        #         d = tensor_product_pauli_dicts(recursive_mapping_dict(m, n//2, ss), v)
+        #         for (k, v) in d.items(): res[k] = res.get(k, 0.) + v
+        # res = {k: v for k, v in res.items() if v != 0}
+        # return res
+
         res = dict()
-        for m, ss, v in zip(Ms, shifts, values):
-            if m:
-                d = tensor_product_pauli_dicts(recursive_mapping_dict(m, n//2, ss), v)
-                for (k, v) in d.items(): res[k] = res.get(k, 0.) + v
+        for q, ss, v in zip(quadrants, shifts, values):
+
+            m = get_quadrant_matrix(M, q, piv, (s[0], s[1]))
+            d = tensor_product_pauli_dicts(recursive_mapping_dict(m, n // 2, ss), v)
+            d = {k: v for k, v in d.items() if abs(v) > 1e-10}
+
+            # High level case: potentially use a lot of memory, dump into file and agglomerate later
+            if n_qubits > 10:
+                with open(f'comb_{n_qubits}_{q}.pkl', 'wb') as file:
+                    #file.write(json.dumps(d))
+                    print(f'Writting:: \t comb_{n_qubits}_{q}.pkl')
+                    pickle.dump(d, file, protocol=5)
+            # Low level case: should be easy to immediately agglomerate
+            else:
+                if m:
+                    for (k, v) in d.items(): res[k] = res.get(k, 0.) + v
+
+        # If high level case: read from files and agglomerate partial results
+        if n_qubits > 10:
+            for f in [f'comb_{n_qubits}_{q}.pkl' for q in range(4)]:
+                with open(f, 'rb') as file:
+                    #d = json.load(file)
+                    d = pickle.load(file)
+                    for (k, v) in d.items(): res[k] = res.get(k, 0.) + v
+                os.remove(f)
+
+        # remove zero entries and return result
         res = {k: v for k, v in res.items() if v != 0}
         return res
 
