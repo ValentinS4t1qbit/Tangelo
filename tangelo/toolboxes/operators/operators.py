@@ -30,6 +30,26 @@ from tangelo.toolboxes.molecular_computation.coefficients import spatial_from_sp
 COEFFICIENT_TYPES = (int, float, complex, np.integer, np.floating)
 
 
+# Define products of all Pauli operators for symbolic multiplication.
+_PAULI_OPERATOR_PRODUCTS = {
+    ('I', 'I'): (1., 'I'),
+    ('I', 'X'): (1., 'X'),
+    ('X', 'I'): (1., 'X'),
+    ('I', 'Y'): (1., 'Y'),
+    ('Y', 'I'): (1., 'Y'),
+    ('I', 'Z'): (1., 'Z'),
+    ('Z', 'I'): (1., 'Z'),
+    ('X', 'X'): (1., 'I'),
+    ('Y', 'Y'): (1., 'I'),
+    ('Z', 'Z'): (1., 'I'),
+    ('X', 'Y'): (1.j, 'Z'),
+    ('X', 'Z'): (-1.j, 'Y'),
+    ('Y', 'X'): (-1.j, 'Z'),
+    ('Y', 'Z'): (1.j, 'X'),
+    ('Z', 'X'): (1.j, 'Y'),
+    ('Z', 'Y'): (-1.j, 'X')
+}
+
 class FermionOperator(of.FermionOperator):
     """Custom FermionOperator class. Based on openfermion's, with additional functionalities.
     """
@@ -289,18 +309,15 @@ class QubitOperator2(of.QubitOperator):
     def __iadd__(self, other):
         if isinstance(other, COEFFICIENT_TYPES):
             self.terms[()] = self.terms.get((), 0.) + other
-        elif isinstance(other, QubitOperator2):
+        elif isinstance(other, self.__class__):
             for k, v in other.terms.items():
                 self.terms[k] = self.terms.get(k, 0.) + v
+        return self
 
     def __add__(self, other):
-        new_d = deepcopy(self.terms)
-        if isinstance(other, COEFFICIENT_TYPES):
-            new_d[()] = new_d.get((), 0.) + other
-        elif isinstance(other, QubitOperator2):
-            for k, v in other.terms.items():
-                new_d[k] = new_d.get(k, 0.) + v
-        return QubitOperator2.from_dict(new_d)
+        new = deepcopy(self)
+        new += other
+        return new
 
     def __radd__(self, other):
         return self.__add__(other)
@@ -314,12 +331,49 @@ class QubitOperator2(of.QubitOperator):
     def __rsub__(self, other):
         return -1 * self.__isub__(other)
 
-    def __mul__(self, multiplier):
-        if isinstance(multiplier, COEFFICIENT_TYPES):
-            d = {k: v * multiplier for k, v in self.terms.items()}
+    def _simplify(self, term, coefficient=1.0):
+        """Simplify a term using commutator and anti-commutator relations."""
+        if not term:
+            return coefficient, term
+
+        term = sorted(term, key=lambda factor: factor[0])
+
+        new_term = []
+        l_factor = term[0]
+        for r_factor in term[1:]:
+            l_index, l_action = l_factor
+            r_index, r_action = r_factor
+
+            # Still on the same qubit, keep simplifying.
+            if l_index == r_index:
+                new_coefficient, new_action = _PAULI_OPERATOR_PRODUCTS[l_action, r_action]
+                l_factor = (l_index, new_action)
+                coefficient *= new_coefficient
+
+            # Reached different qubit, save result and re-initialize.
+            else:
+                if l_action != 'I':
+                    new_term.append(l_factor)
+                l_factor = r_factor
+
+        # Save result of final iteration.
+        if l_factor[1] != 'I':
+            new_term.append(l_factor)
+
+        return coefficient, tuple(new_term)
+
+    def __mul__(self, other):
+        if isinstance(other, COEFFICIENT_TYPES):
+            d = {k: v * other for k, v in self.terms.items()}
             return QubitOperator2.from_dict(d)
-        elif isinstance(multiplier, QubitOperator): # TODO implement multiplication between 2 qubit operators
-            pass
+        elif isinstance(other, self.__class__): # TODO implement multiplication between 2 qubit operators
+            new_terms = dict()
+            for t1, c1 in self.terms.items():
+                for t2, c2 in other.terms.items():
+                    new_c, new_t = self._simplify(t1+t2, coefficient=c1*c2)
+                    new_terms[new_t] = new_terms.get(new_t, 0.) + new_c
+            self.terms = new_terms
+            return self
         else:
             raise TypeError(f'Cannot multiply type {self.__class__.__name__} with {type(self)}.')
 

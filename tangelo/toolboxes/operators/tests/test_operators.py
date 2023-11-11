@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import unittest
+from copy import deepcopy
 
 import numpy as np
 import openfermion as of
@@ -188,6 +189,21 @@ class QubitOperatorTest(unittest.TestCase):
         d = {(): c, ((0, 'X'), (1, 'Y')): -4., ((0, 'Z'), (1, 'Z')): -2.}
         self.assertEqual(-q1 - (q2 - c), QubitOperator2.from_dict(d))
 
+        # iadd
+        q3 = deepcopy(q2)
+        q3 += q1
+        self.assertEqual(q3, q1+q2)
+
+    def test_mult(self):
+        # Multiplication with constant terms
+        d = {(): 5*c, ((0, 'X'), (1, 'Y')): 5., ((0, 'Z'), (1, 'Z')): 10.}
+        self.assertEqual(5*(q2+c), QubitOperator2.from_dict(d))
+
+        # Multiplication with other qubit operator
+        q1_of, q2_of = of.QubitOperator(), of.QubitOperator()
+        q1_of.terms, q2_of.terms = q1.terms.copy(), q2.terms.copy()
+        d_ref = {(): 3.0, ((0, 'Y'), (1, 'X')): (6+0j)}
+        self.assertEqual(q1 * q2, QubitOperator2.from_dict(d_ref))
 
 class QubitHamiltonianTest(unittest.TestCase):
 
