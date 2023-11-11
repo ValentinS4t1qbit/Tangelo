@@ -50,14 +50,13 @@ from openfermion.transforms import chemist_ordered
 
 from tangelo.toolboxes.operators import QubitOperator
 
+os.environ["JULIA_NUM_THREADS"] = str(cpu_count())
 
-# os.environ["JULIA_NUM_THREADS"] = str(4) # str(cpu_count())
-#
-# import julia
-# jl = julia.Julia(compiled_modules=False)
-#
-# from julia import Main
-# Main.include("combinatorial.jl")
+import julia
+jl = julia.Julia(compiled_modules=False)
+
+from julia import Main
+Main.include("combinatorial.jl")
 
 
 ZERO_TOLERANCE = 1e-8
@@ -292,7 +291,6 @@ def recursive_mapping_dict(M, n, s): # n is n_rows and n_cols here
 
         # Ms = [Ms_00, Ms_11, Ms_01, Ms_10]
 
-
         def get_quadrant_matrix(M, quadrant, piv, s):
 
             xp, yp = piv + s[0], piv + s[1]
@@ -419,12 +417,8 @@ def combinatorial_jl(ferm_op, n_modes, n_electrons):
             unique_int = (int_alpha * n_choose_beta) + int_beta
             basis_set[sigma] = unique_int
 
-    #print(f"N qubits: {n}")
-    #print(f"Min int: {min(basis_set.values())}")
-    #print(f"Max int: {max(basis_set.values())}")
-    #print(f"Length int: {len(basis_set.values())}")
-
-    qu_op_dict = Main.get_qubit_op(ferm_op.terms, basis_set, n)
+    #qu_op_dict = Main.get_qubit_op(ferm_op.terms, basis_set, n)
+    qu_op_dict = Main.get_qubit_op_dict(ferm_op.terms, basis_set, n)
 
     qu_op = QubitOperator()
     qu_op.terms = qu_op_dict
