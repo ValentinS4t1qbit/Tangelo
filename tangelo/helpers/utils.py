@@ -42,6 +42,7 @@ def assert_freq_dict_almost_equal(d1, d2, atol):
         for k in d1.keys():
             if abs(d1[k] - d2[k]) > atol:
                 raise AssertionError(f"Frequency {k}, difference above tolerance {atol}: {d1[k]} != {d2[k]}")
+    return True
 
 
 def is_package_installed(package_name):

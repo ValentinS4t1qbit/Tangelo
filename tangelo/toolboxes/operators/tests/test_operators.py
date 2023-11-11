@@ -20,6 +20,11 @@ import openfermion as of
 from tangelo.toolboxes.operators import QubitHamiltonian, FermionOperator, \
     QubitOperator, count_qubits, qubitop_to_qubitham
 
+from tangelo.toolboxes.operators import QubitOperator2
+
+c = 666.
+q1 = 3*QubitOperator2("X0 Y1")
+q2 = 2*QubitOperator2("Z0 Z1") + QubitOperator2("X0 Y1")
 
 class OperatorsUtilitiesTest(unittest.TestCase):
 
@@ -168,6 +173,20 @@ class QubitOperatorTest(unittest.TestCase):
 
         q3 = QubitOperator("Z0 Z1") + QubitOperator("Z1 Z2")
         self.assertEqual(q3.qubit_indices, {0, 1, 2})
+
+    def test_init_from_dict(self):
+        d = {((0, 'X'), (1, 'Y')): 3.}
+        qop = QubitOperator2.from_dict(d)
+        self.assertEqual(qop, q1)
+
+    def test_add_sub(self):
+        # Addition with constant terms and qubit operators
+        d = {(): c, ((0, 'X'), (1, 'Y')): 4., ((0, 'Z'), (1, 'Z')): 2.}
+        self.assertEqual(c + q1 + q2, QubitOperator2.from_dict(d))
+
+        # Substraction with constant terms and qubit operators, both on left and right
+        d = {(): c, ((0, 'X'), (1, 'Y')): -4., ((0, 'Z'), (1, 'Z')): -2.}
+        self.assertEqual(-q1 - (q2 - c), QubitOperator2.from_dict(d))
 
 
 class QubitHamiltonianTest(unittest.TestCase):

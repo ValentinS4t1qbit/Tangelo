@@ -18,11 +18,13 @@ broken down in several modules if needed.
 
 from math import sqrt
 from collections import OrderedDict
+from copy import deepcopy
 
 import numpy as np
 from scipy.special import comb
 import openfermion as of
 
+from tangelo.helpers import assert_freq_dict_almost_equal
 from tangelo.toolboxes.molecular_computation.coefficients import spatial_from_spinorb
 
 COEFFICIENT_TYPES = (int, float, complex, np.integer, np.floating)
@@ -174,6 +176,40 @@ class QubitOperator(of.QubitOperator):
     replaced by our own implementation.
     """
 
+    @property
+    def n_terms(self):
+        """ Return the number of terms present in the operator
+
+        Returns:
+            integer: self-descriptive
+        """
+        return len(self.terms)
+
+    @property
+    def n_qubits(self):
+        """ Return the number of qubits present in the operator as the largest qubit index present
+
+        Returns:
+            integer: self-descriptive
+        """
+        return count_qubits(self)
+
+    @property
+    def qubit_indices(self):
+        """ Return a set of integers corresponding to qubit indices the qubit operator acts on.
+
+        Returns:
+            set: Set of qubit indices.
+        """
+
+        qubit_indices = set()
+        for term in self.terms:
+            if term:
+                indices = list(zip(*term))[0]
+                qubit_indices.update(indices)
+
+        return qubit_indices
+
     @classmethod
     def from_openfermion(cls, of_qop):
         """ Enable instantiation of a QubitOperator from an openfermion QubitOperator object.
@@ -233,10 +269,84 @@ class QubitOperator(of.QubitOperator):
 
         return sum([comb(n_qubits, 2*i, exact=True) * 3**(n_qubits-2*i) for i in range(n_qubits//2)])
 
+    def to_openfermion(self):
+        """Converts Tangelo QubitOperator to openfermion"""
+        qu_op = of.QubitOperator()
+        qu_op.terms = self.terms.copy()
+        return qu_op
+
+class QubitOperator2(of.QubitOperator):
+    """Currently, this class is coming from openfermion. Can be later on be
+    replaced by our own implementation.
+    """
+
+    def __eq__(self, other):
+        if not isinstance(other, (QubitOperator2, of.QubitOperator)):
+            return False
+        else:
+            return assert_freq_dict_almost_equal(self.terms, other.terms, atol=1e-8)
+
+    def __iadd__(self, other):
+        if isinstance(other, COEFFICIENT_TYPES):
+            self.terms[()] = self.terms.get((), 0.) + other
+        elif isinstance(other, QubitOperator2):
+            for k, v in other.terms.items():
+                self.terms[k] = self.terms.get(k, 0.) + v
+
+    def __add__(self, other):
+        new_d = deepcopy(self.terms)
+        if isinstance(other, COEFFICIENT_TYPES):
+            new_d[()] = new_d.get((), 0.) + other
+        elif isinstance(other, QubitOperator2):
+            for k, v in other.terms.items():
+                new_d[k] = new_d.get(k, 0.) + v
+        return QubitOperator2.from_dict(new_d)
+
+    def __radd__(self, other):
+        return self.__add__(other)
+
+    def __isub__(self, other):
+        return self.__iadd__(-1. * other)
+
+    def __sub__(self, other):
+        return self.__add__(-1 * other)
+
+    def __rsub__(self, other):
+        return -1 * self.__isub__(other)
+
+    def __mul__(self, multiplier):
+        if isinstance(multiplier, COEFFICIENT_TYPES):
+            d = {k: v * multiplier for k, v in self.terms.items()}
+            return QubitOperator2.from_dict(d)
+        elif isinstance(multiplier, QubitOperator): # TODO implement multiplication between 2 qubit operators
+            pass
+        else:
+            raise TypeError(f'Cannot multiply type {self.__class__.__name__} with {type(self)}.')
+
+    def __imul__(self, other):
+        return self.__mul__(other)
+
+    @property
+    def n_terms(self):
+        """ Return the number of terms present in the operator
+
+        Returns:
+            integer: self-descriptive
+        """
+        return len(self.terms)
+
+    @property
+    def n_qubits(self):
+        """ Return the number of qubits present in the operator as the largest qubit index present
+
+        Returns:
+            integer: self-descriptive
+        """
+        return count_qubits(self)
+
     @property
     def qubit_indices(self):
-        """Return a set of integers corresponding to qubit indices the qubit
-        operator acts on.
+        """ Return a set of integers corresponding to qubit indices the qubit operator acts on.
 
         Returns:
             set: Set of qubit indices.
@@ -249,6 +359,71 @@ class QubitOperator(of.QubitOperator):
                 qubit_indices.update(indices)
 
         return qubit_indices
+
+    @classmethod
+    def from_dict(cls, d):
+        op = cls()
+        op.terms = d
+        return op
+
+    @classmethod
+    def from_openfermion(cls, of_qop):
+        """ Enable instantiation of a QubitOperator from an openfermion QubitOperator object.
+
+        Args:
+            of_qop (openfermion QubitOperator): an existing qubit operator defined with Openfermion
+
+        Returns:
+            corresponding QubitOperator object.
+        """
+        qop = cls()
+        qop.terms = of_qop.terms.copy()
+        return qop
+
+    def frobenius_norm_compression(self, epsilon, n_qubits):
+        """Reduces the number of operator terms based on its Frobenius norm
+        and a user-defined threshold, epsilon. The eigenspectrum of the
+        compressed operator will not deviate more than epsilon. For more
+        details, see J. Chem. Theory Comput. 2020, 16, 2, 1055-1063.
+
+        Args:
+            epsilon (float): Parameter controlling the degree of compression
+                and resulting accuracy.
+            n_qubits (int): Number of qubits in the register.
+
+        Returns:
+            QubitOperator: The compressed qubit operator.
+        """
+
+        compressed_op = dict()
+        coef2_sum = 0.
+        frob_factor = 2**(n_qubits // 2)
+
+        # Arrange the terms of the qubit operator in ascending order
+        self.terms = OrderedDict(sorted(self.terms.items(), key=lambda x: abs(x[1]), reverse=False))
+
+        for term, coef in self.terms.items():
+            coef2_sum += abs(coef)**2
+            # while the sum is less than epsilon / factor, discard the terms
+            if sqrt(coef2_sum) > epsilon / frob_factor:
+                compressed_op[term] = coef
+        self.terms = compressed_op
+        self.compress()
+
+    def get_max_number_hamiltonian_terms(self, n_qubits):
+        """Compute the possible number of terms for a qubit Hamiltonian. In the
+        absence of an external magnetic field, each Hamiltonian term must have
+        an even number of Pauli Y operators to preserve time-reversal symmetry.
+        See J. Chem. Theory Comput. 2020, 16, 2, 1055-1063 for more details.
+
+        Args:
+            n_qubits (int): Number of qubits in the register.
+
+        Returns:
+            int: The maximum number of possible qubit Hamiltonian terms.
+        """
+
+        return sum([comb(n_qubits, 2*i, exact=True) * 3**(n_qubits-2*i) for i in range(n_qubits//2)])
 
     def to_openfermion(self):
         """Converts Tangelo QubitOperator to openfermion"""
@@ -285,6 +460,10 @@ class QubitHamiltonian(QubitOperator):
     def n_terms(self):
         return len(self.terms)
 
+    @property
+    def n_qubits(self):
+        return count_qubits(self)
+
     def __iadd__(self, other_hamiltonian):
 
         # Raise error if attributes are not the same across Hamiltonians. This
@@ -316,7 +495,6 @@ class QubitHamiltonian(QubitOperator):
     def to_qubitoperator(self):
         qubit_op = QubitOperator()
         qubit_op.terms = self.terms.copy()
-
         return qubit_op
 
 
