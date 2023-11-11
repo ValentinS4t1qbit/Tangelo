@@ -14,6 +14,8 @@
 
 import unittest
 from copy import deepcopy
+from itertools import product
+from time import time
 
 import numpy as np
 import openfermion as of
@@ -26,6 +28,15 @@ from tangelo.toolboxes.operators import QubitOperator2
 c = 666.
 q1 = 3*QubitOperator2("X0 Y1")
 q2 = 2*QubitOperator2("Z0 Z1") + QubitOperator2("X0 Y1")
+
+# Build artificially large operator made of all possible "full" Pauli words (no 'I') of length n_qubits
+n_qubits_op = 7
+n_terms = 3 ** n_qubits_op
+terms = {tuple(zip(range(n_qubits_op), pw)): 1.0 for pw in product(['X', 'Y', 'Z'], repeat=n_qubits_op)}
+bq1_ref = QubitOperator()
+bq1_ref.terms = terms
+bq2_ref = deepcopy(bq1_ref)
+bq1, bq2 = QubitOperator2.from_dict(terms), QubitOperator2.from_dict(terms)
 
 class OperatorsUtilitiesTest(unittest.TestCase):
 
@@ -204,6 +215,21 @@ class QubitOperatorTest(unittest.TestCase):
         q1_of.terms, q2_of.terms = q1.terms.copy(), q2.terms.copy()
         d_ref = {(): 3.0, ((0, 'Y'), (1, 'X')): (6+0j)}
         self.assertEqual(q1 * q2, QubitOperator2.from_dict(d_ref))
+
+    def test_perf_mul(self):
+
+        t1 = time()
+        bq = bq1 * bq2
+        t2 = time()
+        print(f'Elapsed NEW :: {t2-t1} sec')
+
+        t1 = time()
+        bq_ref = bq1_ref * bq2_ref
+        t2 = time()
+        print(f'Elapsed REF :: {t2-t1} sec')
+
+        self.assertEqual(bq, bq_ref)
+
 
 class QubitHamiltonianTest(unittest.TestCase):
 

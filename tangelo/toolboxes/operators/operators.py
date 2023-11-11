@@ -331,6 +331,7 @@ class QubitOperator2(of.QubitOperator):
     def __rsub__(self, other):
         return -1 * self.__isub__(other)
 
+    @profile
     def _simplify(self, term, coefficient=1.0):
         """Simplify a term using commutator and anti-commutator relations."""
         if not term:
