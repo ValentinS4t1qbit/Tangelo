@@ -19,7 +19,6 @@ import os
 import time
 
 from itertools import product
-import pytest
 
 from tangelo.linq import Gate, Circuit
 from tangelo.toolboxes.operators import QubitOperator

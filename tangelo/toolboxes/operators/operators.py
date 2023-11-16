@@ -50,6 +50,7 @@ _PAULI_OPERATOR_PRODUCTS = {
     ('Z', 'Y'): (-1.j, 'X')
 }
 
+
 class FermionOperator(of.FermionOperator):
     """Custom FermionOperator class. Based on openfermion's, with additional functionalities.
     """
@@ -331,7 +332,56 @@ class QubitOperator2(of.QubitOperator):
     def __rsub__(self, other):
         return -1 * self.__isub__(other)
 
-    @profile
+    def _simplify3(self, term, coefficient=1.0):
+        """Simplify a term using commutator and anti-commutator relations."""
+        if not term:
+            return coefficient, term
+
+        term = sorted(term, key=lambda factor: factor[0])
+
+        new_term = []
+        l_factor = term[0]
+        for r_factor in term[1:]:
+
+            l_index, l_action = l_factor
+            r_index, r_action = r_factor
+
+            if l_index != r_index:
+                if l_action != 'I':
+                    new_term.append(l_factor)
+                l_factor = r_factor
+            else:
+                new_coefficient, new_action = _PAULI_OPERATOR_PRODUCTS[l_action, r_action]
+                l_factor = (l_index, new_action)
+                coefficient *= new_coefficient
+
+        # Save result of final iteration.
+        if l_factor[1] != 'I':
+            new_term.append(l_factor)
+
+        return coefficient, tuple(new_term)
+
+    #@profile
+    def _simplify2(self, term, coefficient=1.0):
+        """Simplify a term using commutator and anti-commutator relations."""
+        if not term:
+            return coefficient, term
+
+        # Compute new actions and coefficients for each qubit index present
+        d_act = dict()
+        coef = 1.
+        for ind, act in term:
+            res = _PAULI_OPERATOR_PRODUCTS[(d_act.get(ind, 'I'), act)]
+            coef *= res[0]
+            d_act[ind] = res[1]
+
+        # Recast into ordered tuple of (int, str)
+        d_act = {k: v for k, v in d_act.items() if v != 'I'}
+        t = tuple((i, d_act[i]) for i in sorted(d_act.keys()))
+
+        return coef, t
+
+    #@profile
     def _simplify(self, term, coefficient=1.0):
         """Simplify a term using commutator and anti-commutator relations."""
         if not term:
@@ -342,6 +392,7 @@ class QubitOperator2(of.QubitOperator):
         new_term = []
         l_factor = term[0]
         for r_factor in term[1:]:
+
             l_index, l_action = l_factor
             r_index, r_action = r_factor
 
@@ -366,8 +417,10 @@ class QubitOperator2(of.QubitOperator):
     def __mul__(self, other):
         if isinstance(other, COEFFICIENT_TYPES):
             d = {k: v * other for k, v in self.terms.items()}
-            return QubitOperator2.from_dict(d)
-        elif isinstance(other, self.__class__): # TODO implement multiplication between 2 qubit operators
+            qop = QubitOperator2()
+            qop.terms = d
+            return qop
+        elif isinstance(other, self.__class__):
             new_terms = dict()
             for t1, c1 in self.terms.items():
                 for t2, c2 in other.terms.items():
@@ -417,8 +470,16 @@ class QubitOperator2(of.QubitOperator):
 
     @classmethod
     def from_dict(cls, d):
+        """ Enable instantiation of a QubitOperator from a dictionary of terms.
+
+        Args:
+            d (Openfermion-style dictionary of terms): dictionary to build the operator from.
+
+        Returns:
+            Operator with desired terms
+        """
         op = cls()
-        op.terms = d
+        op.terms = d.copy()
         return op
 
     @classmethod
@@ -435,6 +496,34 @@ class QubitOperator2(of.QubitOperator):
         qop.terms = of_qop.terms.copy()
         return qop
 
+    def norm(self, ord=1, threshold=1e-10):
+        """ Compute the equivalent of a number of numpy norms using the coefficients appearing in the operator.
+        (https://numpy.org/doc/stable/reference/generated/numpy.linalg.norm.html)
+
+        Args:
+            ord (Integer | string): Desired norm. Can be a positive integer, "inf" or "-inf".
+
+        Returns:
+            float: the desired norm
+        """
+        if isinstance(ord, int):
+            if ord > 0:
+                norm = sum(abs(coef)**ord for coef in self.terms.values())
+                return norm**(1. / ord)
+            elif ord == 0:
+                return len([coef for coef in self.terms.values() if abs(coef) > threshold])
+            else:
+                return ValueError('Allowed values for "ord" are positive integers, "inf" or "-inf"')
+        elif isinstance(ord, str):
+            if ord == 'inf':
+                return max(abs(coef) for coef in self.terms.values())
+            elif ord == '-inf':
+                return min(abs(coef) for coef in self.terms.values())
+            else:
+                return ValueError('Allowed values for "ord" are positive integers, "inf" or "-inf"')
+        else:
+            return ValueError('Allowed values for "ord" are positive integers, "inf" or "-inf"')
+
     def frobenius_norm_compression(self, epsilon, n_qubits):
         """Reduces the number of operator terms based on its Frobenius norm
         and a user-defined threshold, epsilon. The eigenspectrum of the
@@ -450,17 +539,19 @@ class QubitOperator2(of.QubitOperator):
             QubitOperator: The compressed qubit operator.
         """
 
-        compressed_op = dict()
-        coef2_sum = 0.
         frob_factor = 2**(n_qubits // 2)
+        threshold = epsilon / frob_factor
 
         # Arrange the terms of the qubit operator in ascending order
+        # VS Why make a new dictionary when sorted already returns a list ?
         self.terms = OrderedDict(sorted(self.terms.items(), key=lambda x: abs(x[1]), reverse=False))
 
+        compressed_op = dict()
+        coef2_sum = 0.
         for term, coef in self.terms.items():
             coef2_sum += abs(coef)**2
             # while the sum is less than epsilon / factor, discard the terms
-            if sqrt(coef2_sum) > epsilon / frob_factor:
+            if sqrt(coef2_sum) > threshold:
                 compressed_op[term] = coef
         self.terms = compressed_op
         self.compress()

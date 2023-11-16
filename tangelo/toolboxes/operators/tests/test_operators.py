@@ -22,7 +22,6 @@ import openfermion as of
 
 from tangelo.toolboxes.operators import QubitHamiltonian, FermionOperator, \
     QubitOperator, count_qubits, qubitop_to_qubitham
-
 from tangelo.toolboxes.operators import QubitOperator2
 
 c = 666.
@@ -187,11 +186,13 @@ class QubitOperatorTest(unittest.TestCase):
         self.assertEqual(q3.qubit_indices, {0, 1, 2})
 
     def test_init_from_dict(self):
+        """ Initialize from dictionary """
         d = {((0, 'X'), (1, 'Y')): 3.}
         qop = QubitOperator2.from_dict(d)
         self.assertEqual(qop, q1)
 
     def test_add_sub(self):
+        """ Addition and substraction operations """
         # Addition with constant terms and qubit operators
         d = {(): c, ((0, 'X'), (1, 'Y')): 4., ((0, 'Z'), (1, 'Z')): 2.}
         self.assertEqual(c + q1 + q2, QubitOperator2.from_dict(d))
@@ -206,6 +207,8 @@ class QubitOperatorTest(unittest.TestCase):
         self.assertEqual(q3, q1+q2)
 
     def test_mult(self):
+        """ Multiplication operations """
+
         # Multiplication with constant terms
         d = {(): 5*c, ((0, 'X'), (1, 'Y')): 5., ((0, 'Z'), (1, 'Z')): 10.}
         self.assertEqual(5*(q2+c), QubitOperator2.from_dict(d))
@@ -216,19 +219,33 @@ class QubitOperatorTest(unittest.TestCase):
         d_ref = {(): 3.0, ((0, 'Y'), (1, 'X')): (6+0j)}
         self.assertEqual(q1 * q2, QubitOperator2.from_dict(d_ref))
 
-    def test_perf_mul(self):
+    def test_norms(self):
+        """ Test various norms """
 
-        t1 = time()
-        bq = bq1 * bq2
-        t2 = time()
-        print(f'Elapsed NEW :: {t2-t1} sec')
+        self.assertEqual(q2.norm(1), 3.)
+        self.assertEqual(q2.norm("inf"), 2.)
+        self.assertEqual(q2.norm("-inf"), 1.)
 
-        t1 = time()
-        bq_ref = bq1_ref * bq2_ref
-        t2 = time()
-        print(f'Elapsed REF :: {t2-t1} sec')
+        q_small = 1e-15*QubitOperator2("Z0 Z1") + 1e-5*QubitOperator2("X0 Y1")
+        self.assertEqual(q_small.norm(0, threshold=1e-16), 2)
+        self.assertEqual(q_small.norm(0, threshold=1e-10), 1)
 
-        self.assertEqual(bq, bq_ref)
+    def test_number_qubits_terms(self):
+        """" Test that number of qubits and terms are as expected """
+
+        # Empty operator
+        q_empty = QubitOperator2()
+        self.assertEqual(q_empty.n_qubits, 0)
+        self.assertEqual(q_empty.n_terms, 0)
+
+        # Constant operator
+        q_c = 666. * QubitOperator2("")
+        self.assertEqual(q_c.n_qubits, 0)
+        self.assertEqual(q_c.n_terms, 1)
+
+        # General case
+        self.assertEqual(q2.n_qubits, 2)
+        self.assertEqual(q2.n_terms, 2)
 
 
 class QubitHamiltonianTest(unittest.TestCase):
