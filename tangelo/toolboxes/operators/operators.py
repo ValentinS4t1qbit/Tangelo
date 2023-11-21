@@ -16,7 +16,7 @@
 broken down in several modules if needed.
 """
 
-from math import sqrt
+from math import sqrt, floor, log2
 from collections import OrderedDict
 from copy import deepcopy
 
@@ -414,25 +414,195 @@ class QubitOperator2(of.QubitOperator):
 
         return coefficient, tuple(new_term)
 
-    def __mul__(self, other):
-        if isinstance(other, COEFFICIENT_TYPES):
-            d = {k: v * other for k, v in self.terms.items()}
-            qop = QubitOperator2()
-            qop.terms = d
-            return qop
-        elif isinstance(other, self.__class__):
-            new_terms = dict()
-            for t1, c1 in self.terms.items():
-                for t2, c2 in other.terms.items():
-                    new_c, new_t = self._simplify(t1+t2, coefficient=c1*c2)
-                    new_terms[new_t] = new_terms.get(new_t, 0.) + new_c
-            self.terms = new_terms
-            return self
-        else:
-            raise TypeError(f'Cannot multiply type {self.__class__.__name__} with {type(self)}.')
+    def _simplify_sq(self, term, coefficient=1.0):
+        """Simplify a term using commutator and anti-commutator relations."""
+        if not term:
+            return coefficient, term
 
-    def __imul__(self, other):
-        return self.__mul__(other)
+        term = sorted(term, key=lambda factor: factor[0])
+
+        new_term = []
+        l_factor = term[0]
+        count = 0
+        for r_factor in term[1:]:
+
+            l_index, l_action = l_factor
+            r_index, r_action = r_factor
+
+            # Still on the same qubit, keep simplifying.
+            if l_index == r_index:
+                new_coefficient, new_action = _PAULI_OPERATOR_PRODUCTS[l_action, r_action]
+                l_factor = (l_index, new_action)
+                coefficient *= new_coefficient
+                if new_action != 'I':
+                    count += 1
+
+            # Reached different qubit, save result and re-initialize.
+            else:
+                if l_action != 'I':
+                    new_term.append(l_factor)
+                l_factor = r_factor
+
+        # Save result of final iteration.
+        if l_factor[1] != 'I':
+            new_term.append(l_factor)
+
+        # If count is odd, coef is 0. If even, coef is twice.
+        coefficient = 0 if count % 2 == 1 else coefficient*2.
+
+        return coefficient, tuple(new_term)
+
+    # def __mul__(self, other):
+    #     if isinstance(other, COEFFICIENT_TYPES):
+    #         d = {k: v * other for k, v in self.terms.items()}
+    #         qop = QubitOperator2()
+    #         qop.terms = d
+    #         return qop
+    #     elif isinstance(other, self.__class__):
+    #         new_terms = dict()
+    #         for t1, c1 in self.terms.items():
+    #             for t2, c2 in other.terms.items():
+    #                 new_c, new_t = self._simplify(t1+t2, coefficient=c1*c2)
+    #                 new_terms[new_t] = new_terms.get(new_t, 0.) + new_c
+    #         self.terms = new_terms
+    #         return self
+    #     else:
+    #         raise TypeError(f'Cannot multiply type {self.__class__.__name__} with {type(self)}.')
+    #
+    # def __imul__(self, other):
+    #     return self.__mul__(other)
+
+    def __imul__(self, multiplier):
+        """In-place multiply (*=) with scalar or operator of the same type.
+
+        Default implementation is to multiply coefficients and
+        concatenate terms.
+
+        Args:
+            multiplier(complex float, or SymbolicOperator): multiplier
+        Returns:
+            product (SymbolicOperator): Mutated self.
+        """
+        # Handle scalars.
+        if isinstance(multiplier, COEFFICIENT_TYPES):
+            for term in self.terms:
+                self.terms[term] *= multiplier
+            return self
+
+        # Handle operator of the same type
+        elif isinstance(multiplier, self.__class__):
+            result_terms = dict()
+            for left_term in self.terms:
+                for right_term in multiplier.terms:
+                    left_coefficient = self.terms[left_term]
+                    right_coefficient = multiplier.terms[right_term]
+
+                    new_coefficient = left_coefficient * right_coefficient
+                    new_term = left_term + right_term
+
+                    new_coefficient, new_term = self._simplify(
+                        new_term, coefficient=new_coefficient)
+
+                    # Update result dict.
+                    if new_term in result_terms:
+                        result_terms[new_term] += new_coefficient
+                    else:
+                        result_terms[new_term] = new_coefficient
+            self.terms = result_terms
+            return self
+
+        # Invalid multiplier type
+        else:
+            raise TypeError('Cannot multiply {} with {}'.format(
+                self.__class__.__name__, multiplier.__class__.__name__))
+
+    def __mul__(self, multiplier):
+        """Return self * multiplier for a scalar, or a SymbolicOperator.
+
+        Args:
+            multiplier: A scalar, or a SymbolicOperator.
+
+        Returns:
+            product (SymbolicOperator)
+
+        Raises:
+            TypeError: Invalid type cannot be multiply with SymbolicOperator.
+        """
+        if isinstance(multiplier, COEFFICIENT_TYPES + (type(self),)):
+            product = deepcopy(self)
+            product *= multiplier
+            return product
+        else:
+            raise TypeError('Object of invalid type cannot multiply with ' +
+                            type(self) + '.')
+
+    #@profile
+    def __pow2__(self, exponent):
+        """Exponentiate the QubitOperator
+
+        Args:
+            exponent (int): Self-descriptive
+
+        Returns:
+            exponentiated (QubitOperator)
+
+        Raises:
+            ValueError: Only non-negative integers supported as exponents.
+        """
+        # Handle invalid exponents.
+        if not isinstance(exponent, int) or exponent < 0:
+            raise ValueError(f'Exponent must be a non-negative integer, but was {exponent}')
+
+        # Case of square
+        if exponent == 2:
+
+            # Constant terms (squared terms) including constant squared
+            cst = sum(coef*coef for coef in self.terms.values())
+
+            # Quadratic terms
+            new_terms = dict()
+            d = self.terms.copy()
+            constant = d.pop(tuple(), 0.)
+            while d:
+                t1, c1 = d.popitem()
+                for t2, c2 in d.items():
+                    new_c, new_t = self._simplify_sq(t1 + t2, coefficient=c1 * c2)
+                    if new_c != 0:
+                        new_terms[new_t] = new_terms.get(new_t, 0.) + new_c
+
+            # Had terms related to the constant
+            factor = 2 * constant
+            for k, v in self.terms.items():
+                new_terms[k] = new_terms.get(k, 0.) + factor*v
+            new_terms[tuple()] = new_terms.get(tuple(), 0.) + (cst - 2*self.constant**2)
+
+            # Return resulting operator
+            res = QubitOperator2()
+            res.terms = new_terms
+            res.compress()
+            return res
+
+        else:
+            # Find largest power of 2 used in exponentiation
+            largest_pow2 = floor(log2(exponent))
+
+            # Use base2 decomposition of exponent to identify what powers of 2 need to be stored
+            exp_bs = bin(exponent)[2:][::-1]
+
+            # Compute powers of 2 necessary
+            qs = {1: deepcopy(self)}
+            for i in range(1, largest_pow2+1):
+                qs[i+1] = qs[i].__pow2__(2)
+                if exp_bs[i-1] != '1':
+                    del qs[i]
+
+            # Use base2 decomposition of exponent to multiply the powers of 2 needed to get final result
+            q = 1. * QubitOperator2('')
+            for i, b in enumerate(exp_bs):
+                if b == '1':
+                    q *= qs[i+1]
+                    q.compress()
+            return q
 
     @property
     def n_terms(self):
@@ -505,6 +675,9 @@ class QubitOperator2(of.QubitOperator):
 
         Returns:
             float: the desired norm
+
+        Raises:
+            ValueError: Only positive integers and pre-defined keywords supported for "ord".
         """
         if isinstance(ord, int):
             if ord > 0:

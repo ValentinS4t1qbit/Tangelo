@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 import unittest
 from copy import deepcopy
 from itertools import product
@@ -19,17 +20,42 @@ from time import time
 
 import numpy as np
 import openfermion as of
+from openfermion.utils import load_operator
 
 from tangelo.toolboxes.operators import QubitHamiltonian, FermionOperator, \
     QubitOperator, count_qubits, qubitop_to_qubitham
 from tangelo.toolboxes.operators import QubitOperator2
 
-c = 666.
+c = 6.
 q1 = 3*QubitOperator2("X0 Y1")
 q2 = 2*QubitOperator2("Z0 Z1") + QubitOperator2("X0 Y1")
+q3 = q2 + QubitOperator2("X1 Z2")
+
+d = {
+     (): (-0.10973055606700678+0j),
+     ((0, 'X'), (1, 'X'), (2, 'X'), (3, 'X')): (0.0454428841443262+0j),
+     ((0, 'X'), (1, 'X'), (2, 'Y'), (3, 'Y')): (0.0454428841443262+0j),
+     ((0, 'Y'), (1, 'Y'), (2, 'X'), (3, 'X')): (0.0454428841443262+0j),
+     ((0, 'Y'), (1, 'Y'), (2, 'Y'), (3, 'Y')): (0.0454428841443262+0j),
+     ((0, 'Z'),): (0.16988452027940382+0j),
+     ((0, 'Z'), (1, 'Z')): (0.12005143072546026+0j),
+     ((0, 'Z'), (2, 'Z')): (0.16821198673715723+0j),
+     ((0, 'Z'), (3, 'Z')): (0.16549431486978647+0j),
+     ((1, 'Z'),): (-0.21886306781219628+0j),
+     ((1, 'Z'), (2, 'Z')): (0.16549431486978647+0j),
+     ((1, 'Z'), (3, 'Z')): (0.17395378776494128+0j),
+     ((2, 'Z'),): (0.16988452027940382+0j),
+     ((2, 'Z'), (3, 'Z')): (0.12005143072546026+0j),
+     ((3, 'Z'),): (-0.21886306781219633+0j)
+     }
+my_qb = QubitOperator2.from_dict(d)
+
+pwd_this_test = os.path.dirname(os.path.abspath(__file__))
+qb_h2 = load_operator("H4_JW_spinupfirst.data", data_directory=pwd_this_test+"/data", plain_text=True)
+qb_h2 = QubitOperator2.from_openfermion(qb_h2)
 
 # Build artificially large operator made of all possible "full" Pauli words (no 'I') of length n_qubits
-n_qubits_op = 7
+n_qubits_op = 2
 n_terms = 3 ** n_qubits_op
 terms = {tuple(zip(range(n_qubits_op), pw)): 1.0 for pw in product(['X', 'Y', 'Z'], repeat=n_qubits_op)}
 bq1_ref = QubitOperator()
@@ -247,6 +273,54 @@ class QubitOperatorTest(unittest.TestCase):
         self.assertEqual(q2.n_qubits, 2)
         self.assertEqual(q2.n_terms, 2)
 
+    def test_square(self):
+        qb = qb_h2 #2*q3 + 5. * q2 + c
+        # q_sq1 = qb**2
+        # q_sq1.compress()
+        # print(q_sq1.n_terms)
+        # q_sq2 = qb.__pow2__(2)
+        # print(q_sq2.n_terms)
+        # self.assertEqual(q_sq1, q_sq2)
+        exp = 2
+        t1 = time()
+        qb1 = qb**2
+        elapsed1 = time() - t1
+        qb1.compress()
+
+        t1 = time()
+        qb2 = qb.__pow2__(exp)
+        t2 = time()
+        elapsed2 = time() - t1
+        qb2.compress()
+
+        print(f'Square over {qb.n_terms} terms speedup :: {elapsed1 / elapsed2}')
+        self.assertEqual(qb1, qb2)
+
+    def test_pow(self):
+        max_exp =10
+        qb = qb_h2
+        import numpy as np
+        a = np.zeros(max_exp)
+        for exp in range(1, max_exp):
+            t1 = time()
+            qb1 = qb.__pow__(exp)
+            elapsed1 = time() - t1
+            qb1.compress()
+
+            t1 = time()
+            qb2 = qb.__pow2__(exp)
+            t2 = time()
+            elapsed2 = time() - t1
+            qb2.compress()
+
+            print(f'Exp {exp} \t OG POW :: {elapsed1:.3f} s \t NU POW :: {elapsed2:.3f} s \t speedup {elapsed1 / elapsed2}')
+
+            a[exp-1] = elapsed1 / elapsed2
+
+            print(qb2.n_terms)
+            self.assertEqual(qb1, qb2)
+
+        print(a)
 
 class QubitHamiltonianTest(unittest.TestCase):
 
