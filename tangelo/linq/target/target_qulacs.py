@@ -31,6 +31,7 @@ class QulacsSimulator(Backend):
         super().__init__(n_shots=n_shots, noise_model=noise_model)
         self.qulacs = qulacs
 
+    #@profile
     def simulate_circuit(self, source_circuit: Circuit, return_statevector=False, initial_statevector=None,
                          desired_meas_result=None, save_mid_circuit_meas=False):
         """Perform state preparation corresponding to the input circuit on the
@@ -307,6 +308,7 @@ class QulacsSimulator(Backend):
                        for k, v in samples.items()}
         return (frequencies, python_statevector) if return_statevector else (frequencies, None)
 
+    #@profile
     def expectation_value_from_prepared_state(self, qubit_operator, n_qubits, prepared_state=None):
         """ Compute an expectation value using a representation of the state
         using qulacs functionalities.

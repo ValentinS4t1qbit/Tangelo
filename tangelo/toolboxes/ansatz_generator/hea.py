@@ -72,6 +72,12 @@ class HEA(Ansatz):
         self.rot_type = rot_type
         self.reference_state = reference_state
 
+        # For a static ansatz circuit, only variational gates angles change during optimization
+        # A static ansatz circuit can be cached to make calculations more efficient
+        self.static_ansatz = True
+        self.cached_circuit = None
+        self.cached_operator = None
+
         # Each euler rotation layer has 3 variational parameters per qubit, and one non-variational entangler
         # Each real rotation layer has 1 variational parameter per qubit, and one non-variational entangler
         # There is an additional rotation layer with no entangler.

@@ -27,8 +27,34 @@
 """Jordan-Wigner transform on fermionic operators."""
 
 from openfermion.transforms import jordan_wigner as openfermion_jordan_wigner
+from tangelo.toolboxes.operators import FermionOperator, QubitOperator
 
+#@profile
+def memoize_mapping(func):
+    """ Store the results of the decorated function for fast lookup """
+    cache = {}
+    def wrapper(*args, **kwargs):
 
+        op, other_args = args[0], args[1:]
+        #print(op, other_args, kwargs)
+
+        qop = QubitOperator().to_openfermion()
+        print('WOO')
+
+        # Traverse operator, assign 1 term at a time for mapping
+        f_tmp = FermionOperator()
+        for k, v in op.terms.items():
+            f_tmp.terms = {k: v}
+            str_args = (str(f_tmp.terms), str(other_args), str(kwargs)) if other_args else (str(f_tmp.terms), str(kwargs))
+            if str_args not in cache:
+                cache[str_args] = func(f_tmp, other_args, **kwargs) if other_args else func(f_tmp, **kwargs)
+            #qop += cache[(str(args), str(kwargs))]
+            qop += cache[str_args]
+        return QubitOperator.from_openfermion(qop)
+    return wrapper
+
+#@memoize_mapping
+@profile
 def jordan_wigner(operator):
     r"""Apply the Jordan-Wigner transform to a FermionOperator,
     InteractionOperator, or DiagonalCoulombHamiltonian to convert to a
@@ -49,6 +75,23 @@ def jordan_wigner(operator):
         TypeError: Operator must be a FermionOperator,
         DiagonalCoulombHamiltonian, or InteractionOperator.
     """
-    qubit_operator = openfermion_jordan_wigner(operator)
 
-    return qubit_operator
+    # V0
+    # qubit_operator = openfermion_jordan_wigner(operator)
+    # return qubit_operator
+
+    # # V1
+    cache = {}
+    op, other_args = operator, ()
+    qop = QubitOperator().to_openfermion()
+
+    # Traverse operator, assign 1 term at a time for mapping
+    f_tmp = FermionOperator()
+    for k, v in op.terms.items():
+        f_tmp.terms = {k: v}
+        str_args = str(f_tmp.terms)
+        if str_args not in cache:
+            a = openfermion_jordan_wigner(f_tmp)
+            cache[str_args] = a
+        qop += cache[str_args]
+    return QubitOperator.from_openfermion(qop)

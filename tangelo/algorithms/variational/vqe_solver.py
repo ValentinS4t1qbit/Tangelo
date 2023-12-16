@@ -287,6 +287,7 @@ class VQESolver:
         resources["vqe_variational_parameters"] = len(self.initial_var_params)
         return resources
 
+    #@profile
     def energy_estimation(self, var_params):
         """Estimate energy using the given ansatz, qubit hamiltonian and compute
         backend. Keeps track of optimal energy and variational parameters along

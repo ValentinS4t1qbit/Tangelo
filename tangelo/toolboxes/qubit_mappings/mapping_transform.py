@@ -31,6 +31,27 @@ from tangelo.toolboxes.qubit_mappings.hcb import hard_core_boson_operator, boson
 
 available_mappings = {"JW", "BK", "SCBK", "JKMN", "HCB"}
 
+# def memoize_mapping(func):
+#     """ Store the results of the decorated function for fast lookup """
+#     cache = {}
+#     def wrapper(*args, **kwargs):
+#
+#         op, other_args = args[0], args[1:]
+#         #print(op, other_args, kwargs)
+#
+#         qop = QubitOperator().to_openfermion()
+#
+#         # Traverse operator, assign 1 term at a time for mapping
+#         f_tmp = FermionOperator()
+#         for k, v in op.terms.items():
+#             f_tmp.terms = {k: v}
+#             str_args = (str(f_tmp.terms), str(other_args), str(kwargs)) if other_args else (str(f_tmp.terms), str(kwargs))
+#             if str_args not in cache:
+#                 cache[str_args] = func(f_tmp, other_args, **kwargs) if other_args else func(f_tmp, **kwargs)
+#             #qop += cache[(str(args), str(kwargs))]
+#             qop += cache[str_args]
+#         return QubitOperator.from_openfermion(qop)
+#     return wrapper
 
 def get_qubit_number(mapping, n_spinorbitals):
     """Get the number of qubits for a specified number of spin orbitals, after

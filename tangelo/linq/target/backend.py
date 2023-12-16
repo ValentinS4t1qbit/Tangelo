@@ -220,6 +220,7 @@ class Backend(abc.ABC):
         """
         pass
 
+    #@profile
     def simulate(self, source_circuit, return_statevector=False, initial_statevector=None,
                  desired_meas_result=None, save_mid_circuit_meas=False):
         """Perform state preparation corresponding to the input circuit on the
@@ -309,6 +310,7 @@ class Backend(abc.ABC):
                                      return_statevector=return_statevector,
                                      initial_statevector=initial_statevector)
 
+    #@profile
     def get_expectation_value(self, qubit_operator, state_prep_circuit, initial_statevector=None, desired_meas_result=None):
         r"""Take as input a qubit operator H and a quantum circuit preparing a
         state |\psi>. Return the expectation value <\psi | H | \psi>.
@@ -449,6 +451,7 @@ class Backend(abc.ABC):
         variance = self.get_variance(qubit_operator, state_prep_circuit, initial_statevector, desired_meas_result=desired_meas_result)
         return np.sqrt(variance/self.n_shots) if self.n_shots else 0.
 
+    #@profile
     def _get_expectation_value_from_statevector(self, qubit_operator, state_prep_circuit, initial_statevector=None, desired_meas_result=None):
         r"""Take as input a qubit operator H and a state preparation returning a
         ket |\psi>. Return the expectation value <\psi | H | \psi>, computed

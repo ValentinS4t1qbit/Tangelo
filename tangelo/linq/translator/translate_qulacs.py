@@ -61,7 +61,7 @@ def get_qulacs_gates():
     GATE_QULACS["CMEASURE"] = qulacs.gate.Measurement
     return GATE_QULACS
 
-
+#@profile
 def translate_c_to_qulacs(source_circuit, noise_model=None, save_measurements=False):
     """Take in an abstract circuit, return an equivalent qulacs QuantumCircuit
     instance. If provided with a noise model, will add noisy gates at
@@ -92,24 +92,32 @@ def translate_c_to_qulacs(source_circuit, noise_model=None, save_measurements=Fa
     for gate in source_circuit._gates:
         if gate.name == 'CNOT' and len(gate.control) > 1:
             gate.name = 'CX'
+
         if gate.name in {"H", "X", "Y", "Z", "S", "T"}:
             (GATE_QULACS[gate.name])(target_circuit, gate.target[0])
+        elif gate.name in {"CNOT"}:
+            (GATE_QULACS[gate.name])(target_circuit, gate.control[0], gate.target[0])
+        elif gate.name in {"RX", "RY", "RZ"}:
+            (GATE_QULACS[gate.name])(target_circuit, gate.target[0], -1. * gate.parameter)
+        elif gate.name in {"MEASURE", "CMEASURE"}:
+            m_gate = (GATE_QULACS[gate.name])(gate.target[0], measure_count)
+            target_circuit.add_gate(m_gate)
+            if save_measurements:
+                measure_count += 1
+        elif gate.name in {"SWAP"}:
+            (GATE_QULACS[gate.name])(target_circuit, gate.target[0], gate.target[1])
+        elif gate.name in {"CSWAP"}:
+            mat_gate = qulacs.gate.to_matrix_gate(GATE_QULACS[gate.name](gate.target[0], gate.target[1]))
+            for c in gate.control:
+                mat_gate.add_control_qubit(c, 1)
+            target_circuit.add_gate(mat_gate)
         elif gate.name in {"CH", "CX", "CY", "CZ"}:
             mat_gate = qulacs.gate.to_matrix_gate(GATE_QULACS[gate.name](gate.target[0]))
             for c in gate.control:
                 mat_gate.add_control_qubit(c, 1)
             target_circuit.add_gate(mat_gate)
-        elif gate.name in {"RX", "RY", "RZ"}:
-            (GATE_QULACS[gate.name])(target_circuit, gate.target[0], -1. * gate.parameter)
         elif gate.name in {"CRX", "CRY", "CRZ"}:
             mat_gate = qulacs.gate.to_matrix_gate(GATE_QULACS[gate.name](gate.target[0], -1. * gate.parameter))
-            for c in gate.control:
-                mat_gate.add_control_qubit(c, 1)
-            target_circuit.add_gate(mat_gate)
-        elif gate.name in {"SWAP"}:
-            (GATE_QULACS[gate.name])(target_circuit, gate.target[0], gate.target[1])
-        elif gate.name in {"CSWAP"}:
-            mat_gate = qulacs.gate.to_matrix_gate(GATE_QULACS[gate.name](gate.target[0], gate.target[1]))
             for c in gate.control:
                 mat_gate.add_control_qubit(c, 1)
             target_circuit.add_gate(mat_gate)
@@ -129,13 +137,6 @@ def translate_c_to_qulacs(source_circuit, noise_model=None, save_measurements=Fa
                                                                                  [0, s, c, 0],
                                                                                  [s, 0, 0, c]])
             target_circuit.add_gate(mat_gate)
-        elif gate.name in {"CNOT"}:
-            (GATE_QULACS[gate.name])(target_circuit, gate.control[0], gate.target[0])
-        elif gate.name in {"MEASURE", "CMEASURE"}:
-            m_gate = (GATE_QULACS[gate.name])(gate.target[0], measure_count)
-            target_circuit.add_gate(m_gate)
-            if save_measurements:
-                measure_count += 1
         else:
             raise ValueError(f"Gate '{gate.name}' not supported on backend qulacs")
 
@@ -162,7 +163,7 @@ def translate_c_to_qulacs(source_circuit, noise_model=None, save_measurements=Fa
 
     return target_circuit
 
-
+#@profile
 def translate_op_to_qulacs(qubit_operator):
     """Helper function to translate a Tangelo QubitOperator to a qulacs general
     quantum operator.
@@ -177,7 +178,7 @@ def translate_op_to_qulacs(qubit_operator):
 
     return create_quantum_operator_from_openfermion_text(qubit_operator.__repr__())
 
-
+#@profile
 def translate_op_from_qulacs(qubit_operator):
     """Helper function to translate a qulacs general quantum operator to a
     Tangelo QubitOperator.

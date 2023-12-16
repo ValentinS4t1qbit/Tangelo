@@ -185,6 +185,7 @@ class UCCSD(Ansatz):
         else:
             self.circuit = uccsd_circuit
 
+    #@profile
     def update_var_params(self, var_params):
         """Shortcut: set value of variational parameters in the already-built
         ansatz circuit member. Preferable to rebuilt your circuit from scratch,
@@ -198,6 +199,7 @@ class UCCSD(Ansatz):
 
         # If qubit operator terms have changed, rebuild circuit. Else, simply update variational gates directly
         if set(self.pauli_to_angles_mapping.keys()) != set(qubit_op.terms.keys()):
+            #print('UCCSD ansatz rebuild')
             self.build_circuit(var_params)
         else:
             for pauli_word, coef in qubit_op.terms.items():
