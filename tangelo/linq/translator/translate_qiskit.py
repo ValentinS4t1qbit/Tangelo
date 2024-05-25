@@ -94,15 +94,18 @@ def translate_c_to_qiskit(source_circuit: Circuit, save_measurements=False, no_c
 
     # Maps the gate information properly. Different for each backend (order, values)
     for gate in source_circuit._gates:
-        if gate.control is not None:
-            if len(gate.control) > 1:
-                raise ValueError('Multi-controlled gates not supported with qiskit. Gate {gate.name} with controls {gate.control} is not allowed')
+        # if gate.control is not None:
+        #     if len(gate.control) > 1:
+        #         raise ValueError('Multi-controlled gates not supported with qiskit. Gate {gate.name} with controls {gate.control} is not allowed')
         if gate.name in {"H", "Y", "X", "Z", "S", "T"}:
             (GATE_QISKIT[gate.name])(target_circuit, gate.target[0])
         elif gate.name in {"RX", "RY", "RZ", "PHASE"}:
             (GATE_QISKIT[gate.name])(target_circuit, gate.parameter, gate.target[0])
         elif gate.name in {"CRX", "CRY", "CRZ", "CPHASE"}:
-            (GATE_QISKIT[gate.name])(target_circuit, gate.parameter, gate.control[0], gate.target[0])
+            if gate.name == 'CRY' and len(gate.control) > 1:
+                qiskit.QuantumCircuit.mcry(target_circuit, gate.parameter, gate.control, gate.target[0])
+            else:
+                (GATE_QISKIT[gate.name])(target_circuit, gate.parameter, gate.control[0], gate.target[0])
         elif gate.name in {"CNOT", "CH", "CX", "CY", "CZ"}:
             (GATE_QISKIT[gate.name])(target_circuit, gate.control[0], gate.target[0])
         elif gate.name in {"SWAP"}:
