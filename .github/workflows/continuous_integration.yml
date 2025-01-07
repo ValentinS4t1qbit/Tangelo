@@ -57,6 +57,7 @@ jobs:
         sudo apt-get install -y dotnet-sdk-8.0
         dotnet tool install -g Microsoft.Quantum.IQSharp
         $(which dotnet-iqsharp) install --user
+	echo "YAYAYAYAYAYA"
         pip install qsharp
       if: always()
 
