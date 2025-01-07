@@ -54,13 +54,11 @@ jobs:
         sudo dpkg -i packages-microsoft-prod.deb
         rm packages-microsoft-prod.deb
         sudo apt-get update; sudo apt-get install -y apt-transport-https && sudo apt-get update
-        echo "YOYOYOYO"
         sudo apt-get install -y dotnet-sdk-8.0
-        echo "YEYEYEYEYE"
-        sudo apt-get update && sudo apt-get install -y aspnetcore-runtime-8.0
         echo "BB"
         dotnet tool install -g Microsoft.Quantum.IQSharp
         echo "YIYIYIYIYI"
+        sudo ln -s /usr/share/dotnet/shared /usr/lib/dotnet
         $(which dotnet-iqsharp) install --user
         echo "YAYAYAYAYAYA"
         pip install qsharp
